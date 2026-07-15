@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # SACIID WINDOWS SETUP - MAIN ENTRY POINT
 # File: install.ps1
 # Description: Self-elevates to Administrator, sets execution policy bypass,
@@ -194,30 +194,45 @@ try {
 
         foreach ($mod in $missingModules) {
             $modUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/modules/$mod"
+            $rootUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/$mod"
             $modTarget = "$modulesDir\$mod"
-            Write-Host "     -> Downloading modules/$mod..." -ForegroundColor DarkCyan
-            try {
-                Invoke-RestMethod -Uri $modUrl -OutFile $modTarget -ErrorAction Stop
-                if (Test-Path $modTarget) {
-                    $contentCheck = Get-Content -Path $modTarget -TotalCount 1 -ErrorAction SilentlyContinue
-                    if ($contentCheck -match "404: Not Found") {
-                        Remove-Item -Path $modTarget -Force -ErrorAction SilentlyContinue
-                        throw "Returned 404 Not Found from GitHub URL: $modUrl"
+            Write-Host "     -> Downloading $mod..." -ForegroundColor DarkCyan
+            
+            $downloaded = $false
+            foreach ($url in @($modUrl, $rootUrl)) {
+                try {
+                    Invoke-RestMethod -Uri $url -OutFile $modTarget -ErrorAction Stop
+                    if (Test-Path $modTarget) {
+                        $contentCheck = Get-Content -Path $modTarget -TotalCount 1 -ErrorAction SilentlyContinue
+                        if ($contentCheck -match "404: Not Found") {
+                            Remove-Item -Path $modTarget -Force -ErrorAction SilentlyContinue
+                        } else {
+                            $downloaded = $true
+                            break
+                        }
                     }
-                }
+                } catch {}
             }
-            catch {
-                Write-Host " [!] Could not fetch modules/$mod from GitHub online ($($_.Exception.Message))." -ForegroundColor Yellow
-                Write-Host "     Ensure all files are uploaded to https://github.com/$gitHubUser/$gitHubRepo" -ForegroundColor Yellow
+
+            if (-not $downloaded) {
+                Write-Host " [!] Could not fetch '$mod' from GitHub online (404 Not Found)." -ForegroundColor Yellow
+                Write-Host "     Ensure the 'modules' folder (containing $mod) is uploaded to https://github.com/$gitHubUser/$gitHubRepo" -ForegroundColor Yellow
             }
         }
 
-        # Fetch configs/office.xml if missing
+        # Fetch configs/office.xml if missing (check both configs/office.xml and root office.xml)
         if (-not (Test-Path "$configsDir\office.xml")) {
-            $cfgUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/configs/office.xml"
-            try {
-                Invoke-RestMethod -Uri $cfgUrl -OutFile "$configsDir\office.xml" -ErrorAction SilentlyContinue
-            } catch {}
+            foreach ($url in @("https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/configs/office.xml", "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/office.xml")) {
+                try {
+                    Invoke-RestMethod -Uri $url -OutFile "$configsDir\office.xml" -ErrorAction Stop
+                    if (Test-Path "$configsDir\office.xml") {
+                        $contentCheck = Get-Content -Path "$configsDir\office.xml" -TotalCount 1 -ErrorAction SilentlyContinue
+                        if ($contentCheck -match "404: Not Found") {
+                            Remove-Item -Path "$configsDir\office.xml" -Force -ErrorAction SilentlyContinue
+                        } else { break }
+                    }
+                } catch {}
+            }
         }
     }
 
