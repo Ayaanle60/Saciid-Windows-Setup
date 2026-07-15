@@ -9,6 +9,53 @@
 # 1. LANGUAGE MODE CHECK & EXECUTION POLICY BYPASS
 function Exit-WithError {
     param ([string]$Message)
+    
+    # Create problem.txt on the user's Desktop explaining exactly why it failed
+    $desktopPath = [System.Environment]::GetFolderPath('Desktop')
+    if (-not $desktopPath -or -not (Test-Path $desktopPath)) {
+        $desktopPath = "$env:USERPROFILE\Desktop"
+    }
+    $problemFile = Join-Path -Path $desktopPath -ChildPath "problem.txt"
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    $osName = "Windows"
+    $osVer = "Unknown"
+    try {
+        $osInfo = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if ($osInfo) { $osName = $osInfo.Caption }
+        $regInfo = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+        if ($regInfo) { $osVer = "$($regInfo.DisplayVersion) ($($osInfo.Version))" }
+    } catch {}
+
+    $problemReport = @"
+==============================================================================
+                    SACIID WINDOWS SETUP - PROBLEM REPORT
+==============================================================================
+Timestamp      : $timestamp
+System OS      : $osName - $osVer
+PowerShell     : $($PSVersionTable.PSVersion) (LanguageMode: $($ExecutionContext.SessionState.LanguageMode))
+Execution Mode : $(if ($PSCommandPath) { "Local Script ($PSCommandPath)" } else { "Online GitHub Command (irm | iex)" })
+==============================================================================
+
+REASON FOR FAILURE / PROBLEM:
+$Message
+
+==============================================================================
+SUGGESTED ACTIONS & SOLUTIONS:
+1. Run as Administrator: Ensure you are running PowerShell as Administrator
+   (Right-click PowerShell or Run-Online-Setup.cmd -> Run as Administrator).
+2. Online GitHub Check: If running via 'irm | iex' from GitHub, ensure that
+   all module files (.ps1) and configs/office.xml exist and are uploaded to:
+   https://github.com/Ayaanle60/Saciid-Windows-Setup
+3. Antivirus / Security: Check if your antivirus, Windows Defender, or AppLocker
+   is blocking script execution or network requests to raw.githubusercontent.com.
+==============================================================================
+"@
+    try {
+        Set-Content -Path $problemFile -Value $problemReport -Force -ErrorAction SilentlyContinue
+        Write-Host " [!] A detailed problem report has been saved to your Desktop: $problemFile" -ForegroundColor Yellow
+    } catch {}
+
     Write-Host " [✗] $Message" -ForegroundColor Red
     Write-Host ""
     Write-Host " [i] Press [Enter] or any key to keep window open / close..." -ForegroundColor Cyan
@@ -138,57 +185,62 @@ foreach ($mod in $requiredModules) {
     }
 }
 
-if ($missingModules.Count -gt 0) {
-    Write-Host " [i] Local module framework incomplete. Downloading latest modules from GitHub..." -ForegroundColor Cyan
-    $gitHubUser = "Ayaanle60"
-    $gitHubRepo = "Saciid-Windows-Setup"
-    $gitHubBranch = "main"
+try {
+    if ($missingModules.Count -gt 0) {
+        Write-Host " [i] Local module framework incomplete. Downloading latest modules from GitHub..." -ForegroundColor Cyan
+        $gitHubUser = "Ayaanle60"
+        $gitHubRepo = "Saciid-Windows-Setup"
+        $gitHubBranch = "main"
 
-    foreach ($mod in $missingModules) {
-        $modUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/modules/$mod"
-        $modTarget = "$modulesDir\$mod"
-        Write-Host "     -> Downloading modules/$mod..." -ForegroundColor DarkCyan
-        try {
-            Invoke-RestMethod -Uri $modUrl -OutFile $modTarget -ErrorAction Stop
-            if (Test-Path $modTarget) {
-                $contentCheck = Get-Content -Path $modTarget -TotalCount 1 -ErrorAction SilentlyContinue
-                if ($contentCheck -match "404: Not Found") {
-                    Remove-Item -Path $modTarget -Force -ErrorAction SilentlyContinue
-                    throw "Returned 404 Not Found"
+        foreach ($mod in $missingModules) {
+            $modUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/modules/$mod"
+            $modTarget = "$modulesDir\$mod"
+            Write-Host "     -> Downloading modules/$mod..." -ForegroundColor DarkCyan
+            try {
+                Invoke-RestMethod -Uri $modUrl -OutFile $modTarget -ErrorAction Stop
+                if (Test-Path $modTarget) {
+                    $contentCheck = Get-Content -Path $modTarget -TotalCount 1 -ErrorAction SilentlyContinue
+                    if ($contentCheck -match "404: Not Found") {
+                        Remove-Item -Path $modTarget -Force -ErrorAction SilentlyContinue
+                        throw "Returned 404 Not Found from GitHub URL: $modUrl"
+                    }
                 }
             }
+            catch {
+                Write-Host " [!] Could not fetch modules/$mod from GitHub online ($($_.Exception.Message))." -ForegroundColor Yellow
+                Write-Host "     Ensure all files are uploaded to https://github.com/$gitHubUser/$gitHubRepo" -ForegroundColor Yellow
+            }
         }
-        catch {
-            Write-Host " [!] Could not fetch modules/$mod from GitHub online ($($_.Exception.Message))." -ForegroundColor Yellow
-            Write-Host "     Ensure all files are uploaded to https://github.com/$gitHubUser/$gitHubRepo" -ForegroundColor Yellow
+
+        # Fetch configs/office.xml if missing
+        if (-not (Test-Path "$configsDir\office.xml")) {
+            $cfgUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/configs/office.xml"
+            try {
+                Invoke-RestMethod -Uri $cfgUrl -OutFile "$configsDir\office.xml" -ErrorAction SilentlyContinue
+            } catch {}
         }
     }
 
-    # Fetch configs/office.xml if missing
-    if (-not (Test-Path "$configsDir\office.xml")) {
-        $cfgUrl = "https://raw.githubusercontent.com/$gitHubUser/$gitHubRepo/$gitHubBranch/configs/office.xml"
-        try {
-            Invoke-RestMethod -Uri $cfgUrl -OutFile "$configsDir\office.xml" -ErrorAction SilentlyContinue
-        } catch {}
+    # Dot-source all required modules safely
+    foreach ($mod in $requiredModules) {
+        $modPath = "$modulesDir\$mod"
+        if (Test-Path $modPath) {
+            try {
+                . $modPath
+            }
+            catch {
+                Exit-WithError "Syntax or execution error loading module ${mod}: $($_.Exception.Message)"
+            }
+        }
+        else {
+            Exit-WithError "Critical error: Module '$mod' not found at $modPath. Ensure all files are pushed to GitHub."
+        }
     }
+
+    # 5. INITIALIZE LOGGING & LAUNCH INTERACTIVE MENU
+    Write-Log -Message "Saciid Windows Setup session started by $env:USERNAME on $env:COMPUTERNAME" -Level "INFO"
+    Show-Menu
 }
-
-# Dot-source all required modules safely
-foreach ($mod in $requiredModules) {
-    $modPath = "$modulesDir\$mod"
-    if (Test-Path $modPath) {
-        try {
-            . $modPath
-        }
-        catch {
-            Exit-WithError "Error loading module ${mod}: $($_.Exception.Message)"
-        }
-    }
-    else {
-        Exit-WithError "Critical error: Module '$mod' not found at $modPath. Ensure all files are pushed to GitHub."
-    }
+catch {
+    Exit-WithError "Unhandled startup or execution failure: $($_.Exception.Message)"
 }
-
-# 5. INITIALIZE LOGGING & LAUNCH INTERACTIVE MENU
-Write-Log -Message "Saciid Windows Setup session started by $env:USERNAME on $env:COMPUTERNAME" -Level "INFO"
-Show-Menu
